@@ -201,7 +201,19 @@ app.MapGet("/employees/{id}", (int id) =>
     using NpgsqlConnection connection = new NpgsqlConnection(connectionString);
     connection.Open();
     using NpgsqlCommand command = connection.CreateCommand();
-    command.CommandText = "SELECT * FROM Employee WHERE Id = @id";
+    command.CommandText = @"
+        SELECT 
+            e.Id,
+            e.Name, 
+            e.Specialty, 
+            st.Id AS serviceTicketId, 
+            st.CustomerId,
+            st.Description,
+            st.Emergency,
+            st.DateCompleted 
+        FROM Employee e
+        LEFT JOIN ServiceTicket st ON st.EmployeeId = e.Id
+        WHERE e.Id = @id";
     // use command parameters to add the specific Id we are looking for to the query
     command.Parameters.AddWithValue("@id", id);
     using NpgsqlDataReader reader = command.ExecuteReader();
@@ -215,13 +227,71 @@ app.MapGet("/employees/{id}", (int id) =>
                 Id = reader.GetInt32(reader.GetOrdinal("Id")),
                 Name = reader.GetString(reader.GetOrdinal("Name")),
                 Specialty = reader.GetString(reader.GetOrdinal("Specialty")),
-                ServiceTickets = new List<ServiceTicket>()
+                ServiceTickets = new List<ServiceTicket>() //empty List to add service tickets to
             };
         }
+        // reader.IsDBNull checks if a column in a particular position is null
+        if (!reader.IsDBNull(reader.GetOrdinal("serviceTicketId")))
+        {
+            employee.ServiceTickets.Add(new ServiceTicket
+            {
+                Id = reader.GetInt32(reader.GetOrdinal("serviceTicketId")),
+                CustomerId = reader.GetInt32(reader.GetOrdinal("CustomerId")),
+                //we don't need to get this from the database, we already know it
+                EmployeeId = id,
+                Description = reader.GetString(reader.GetOrdinal("Description")),
+                Emergency = reader.GetBoolean(reader.GetOrdinal("Emergency")),
+                // Npgsql can't automatically convert NULL in the database to C# null, so we have to check whether it's null before trying to get it
+                DateCompleted = reader.IsDBNull(reader.GetOrdinal("DateCompleted")) ? null : reader.GetDateTime(reader.GetOrdinal("DateCompleted"))
+            });
+        }
     }
+     // Return 404 if the employee is never set (meaning, that reader.Read() immediately returned false because the id did not match an employee)
+    // otherwise 200 with the employee data
+    return employee == null ? Results.NotFound() : Results.Ok(employee);
+});
+
+app.MapPost("/employees", (Employee employee) =>
+{
+    using NpgsqlConnection connection = new NpgsqlConnection(connectionString);
+    connection.Open();
+    using NpgsqlCommand command = connection.CreateCommand();
+    command.CommandText = @"
+    INSERT INTO Employee (Name, Specialty)
+    VALUES (@name, @specialty)
+    RETURNING Id
+    ";
+    command.Parameters.AddWithValue("@name", employee.Name);
+    command.Parameters.AddWithValue("@specialty", employee.Specialty);
+
+        //the database will return the new Id for the employee, add it to the C# object
+    employee.Id = (int)command.ExecuteScalar();
+
     return employee;
 });
 
+app.MapPut("/employees/{id}", (int id, Employee employee) =>
+{
+    if (id != employee.Id)
+    {
+        return Results.BadRequest();
+    }
+    using NpgsqlConnection connection = new NpgsqlConnection(connectionString);
+    connection.Open();
+    using NpgsqlCommand command = connection.CreateCommand();
+    command.CommandText = @"
+        UPDATE Employee 
+        SET Name = @name,
+            Specialty = @specialty
+        WHERE Id = @id
+    ";
+    command.Parameters.AddWithValue("@name", employee.Name);
+    command.Parameters.AddWithValue("@specialty", employee.Specialty);
+    command.Parameters.AddWithValue("@id", id);
+
+    command.ExecuteNonQuery();
+    return Results.NoContent();
+});
 
 app.MapPost("/servicetickets", (ServiceTicket serviceTicket) =>
 {
