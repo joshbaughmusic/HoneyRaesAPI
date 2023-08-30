@@ -1,6 +1,10 @@
 using System.Text.Json.Serialization;
 using Microsoft.AspNetCore.Http.Json;
 using HoneyRaesAPI.Models;
+using Npgsql;
+
+var connectionString = "Host=localhost;Port=5432;Username=postgres;Password=Lonewolf59x;Database=HoneyRaes";
+
 
 List<Customer> customers = new List<Customer> 
 {
@@ -153,21 +157,70 @@ app.MapGet("/customers/{id}", (int id) =>
 
 app.MapGet("/employees", () =>
 {
+    // create an empty list of employees to add to. 
+    List<Employee> employees = new List<Employee>();
+    //make a connection to the PostgreSQL database using the connection string
+    using NpgsqlConnection connection = new NpgsqlConnection(connectionString);
+    //open the connection
+    connection.Open();
+    // create a sql command to send to the database
+    using NpgsqlCommand command = connection.CreateCommand();
+command.CommandText = @"
+        SELECT 
+            e.Id,
+            e.Name, 
+            e.Specialty, 
+            st.Id AS serviceTicketId, 
+            st.CustomerId,
+            st.Description,
+            st.Emergency,
+            st.DateCompleted 
+        FROM Employee e
+        LEFT JOIN ServiceTicket st ON st.EmployeeId = e.Id
+        WHERE e.Id = @id";    //send the command. 
+    using NpgsqlDataReader reader = command.ExecuteReader();
+    //read the results of the command row by row
+    while (reader.Read()) // reader.Read() returns a boolean, to say whether there is a row or not, it also advances down to that row if it's there. 
+    {
+        //This code adds a new C# employee object with the data in the current row of the data reader 
+        employees.Add(new Employee
+        {
+            Id = reader.GetInt32(reader.GetOrdinal("Id")), //find what position the Id column is in, then get the integer stored at that position
+            Name = reader.GetString(reader.GetOrdinal("Name")),
+            Specialty = reader.GetString(reader.GetOrdinal("Specialty"))
+        });
+    }
+    //once all the rows have been read, send the list of employees back to the client as JSON
     return employees;
 });
 
 
 app.MapGet("/employees/{id}", (int id) =>
 {
-    Employee employee = employees.FirstOrDefault(e => e.Id == id);
-    if(employee == null)
+    Employee employee = null;
+    using NpgsqlConnection connection = new NpgsqlConnection(connectionString);
+    connection.Open();
+    using NpgsqlCommand command = connection.CreateCommand();
+    command.CommandText = "SELECT * FROM Employee WHERE Id = @id";
+    // use command parameters to add the specific Id we are looking for to the query
+    command.Parameters.AddWithValue("@id", id);
+    using NpgsqlDataReader reader = command.ExecuteReader();
+    // We are only expecting one row back, so we don't need a loop!
+    while (reader.Read())
     {
-        return Results.NotFound("Not found!");
+        if (employee == null)
+        {
+            employee = new Employee
+            {
+                Id = reader.GetInt32(reader.GetOrdinal("Id")),
+                Name = reader.GetString(reader.GetOrdinal("Name")),
+                Specialty = reader.GetString(reader.GetOrdinal("Specialty")),
+                ServiceTickets = new List<ServiceTicket>()
+            };
+        }
     }
-    employee.ServiceTickets = serviceTickets.Where(st => st.EmployeeId == id).ToList();
-    return Results.Ok(employee);
+    return employee;
 });
-
 
 
 app.MapPost("/servicetickets", (ServiceTicket serviceTicket) =>
